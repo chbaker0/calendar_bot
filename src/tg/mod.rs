@@ -163,10 +163,15 @@ mod tests {
             }
             last_requested_offset.replace(updates_req.offset);
             let update_offset = updates_req.offset.unwrap_or(0);
-            future::ok::<_, ()>(vec![new_update(update_offset), new_update(update_offset + 1)])
+            future::ok::<_, ()>(vec![
+                new_update(update_offset),
+                new_update(update_offset + 1),
+            ])
         };
 
-        let mut updates = update_stream_impl(get_updates, 1).wait().map(Result::unwrap);
+        let mut updates = update_stream_impl(get_updates, 1)
+            .wait()
+            .map(Result::unwrap);
         updates.next();
         updates.next();
         updates.next();

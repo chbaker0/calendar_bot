@@ -47,4 +47,5 @@ pub struct SendMessage {
 pub struct Message {
     pub message_id: i64,
     pub chat: Chat,
+    pub text: Option<String>,
 }

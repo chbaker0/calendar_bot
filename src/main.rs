@@ -21,17 +21,50 @@ fn main() {
     tg::update_stream(&tg_client, 10)
         .wait()
         .map(Result::unwrap)
-        .for_each(|update| {
-            println!("{:?}", update);
-
-            if let Some(ref recv_msg) = update.message {
-                let msg = tg::SendMessage {
+        .filter_map(|update| update.message)
+        .for_each(|recv_msg| {
+            let (command, body) =
+                parse_command(recv_msg.text.as_ref().map(String::as_str).unwrap_or(""));
+            if command == "echo" && !body.is_empty() {
+                let send_msg = tg::SendMessage {
                     chat_id: recv_msg.chat.id,
-                    text: String::from("frack my sack"),
+                    text: String::from(body),
                 };
-                tg_client.send_message(msg).wait().unwrap().unwrap();
+                tg_client.send_message(send_msg).wait().unwrap().unwrap();
             }
         });
+}
+
+/// Given the body of a message, parse out the command from the rest
+/// of the message.
+fn parse_command(text: &str) -> (&str, &str) {
+    let mut chars = text.chars();
+    if let Some(_) = chars.find(|c| c == &'/') {
+        let chars_after_slash = chars.clone();
+        let text_after_slash = chars_after_slash.as_str();
+
+        let maybe_at_ndx = chars_after_slash.clone().position(|c| c == '@');
+        let maybe_cmd_end = chars_after_slash.clone().position(|c| c == ' ');
+
+        let (mut command, rest) = if let Some(cmd_end) = maybe_cmd_end {
+            (
+                &text_after_slash[0..cmd_end],
+                text_after_slash.get(cmd_end + 1..).unwrap_or(""),
+            )
+        } else {
+            (text_after_slash, "")
+        };
+
+        if let Some(at_ndx) = maybe_at_ndx {
+            if at_ndx < command.chars().count() {
+                command = &command[0..at_ndx];
+            }
+        }
+
+        (command, rest)
+    } else {
+        ("", text)
+    }
 }
 
 /// Adapter for using reqwest with futures.
@@ -50,3 +83,23 @@ fn synchronous_send(
 }
 
 const TOKEN_ENV_VAR: &'static str = "TG_BOT_TOKEN";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_command_tests() {
+        assert_eq!(parse_command("/foo"), ("foo", ""));
+        assert_eq!(parse_command("/foo body test"), ("foo", "body test"));
+        assert_eq!(
+            parse_command("/foo@bar_bot body test"),
+            ("foo", "body test")
+        );
+        assert_eq!(parse_command("  /foo"), ("foo", ""));
+        assert_eq!(parse_command("/"), ("", ""));
+        assert_eq!(parse_command("/@"), ("", ""));
+        assert_eq!(parse_command("help me"), ("", "help me"));
+        assert_eq!(parse_command(""), ("", ""));
+    }
+}
