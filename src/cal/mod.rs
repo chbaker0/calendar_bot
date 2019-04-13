@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 
-use chrono::offset::Utc;
 use chrono::DateTime;
 use chrono::Duration;
+use chrono::Utc;
 
 use std::cmp::Ordering;
 
@@ -40,6 +40,17 @@ pub struct Event {
     pub duration: Duration,
 }
 
+impl Default for Event {
+    fn default() -> Event {
+        Event {
+            organizer: "".to_string(),
+            description: "".to_string(),
+            date: chrono::Utc::now(),
+            duration: Duration::zero(),
+        }
+    }
+}
+
 #[allow(dead_code)]
 impl Event {
     pub fn overlap(&self, other: &Event) -> bool {
@@ -59,10 +70,8 @@ struct CmpEvent {
 impl CmpEvent {
     fn from_date(date: DateTime<Utc>) -> CmpEvent {
         let event = Event {
-            organizer: "".to_string(),
-            description: "".to_string(),
             date: date,
-            duration: Duration::zero(),
+            ..Default::default()
         };
 
         CmpEvent { event: event }
@@ -96,29 +105,22 @@ impl PartialEq for CmpEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
     fn event_ordering() {
-        let event_a = Event {
+        let event_a = CmpEvent::from_event(Event {
             organizer: "zzzz".to_string(),
             description: "zzzz".to_string(),
-            date: "2019-01-01T00:00:00Z"
-                .to_string()
-                .parse::<DateTime<Utc>>()
-                .unwrap(),
-            duration: Duration::zero(),
-        };
-        let event_a = CmpEvent::from_event(event_a);
-        let event_b = Event {
+            date: Utc.ymd(2019, 01, 01).and_hms(0, 0, 0),
+            duration: Duration::hours(1),
+        });
+        let event_b = CmpEvent::from_event(Event {
             organizer: "aaaa".to_string(),
             description: "aaaa".to_string(),
-            date: "2020-12-31T00:00:00Z"
-                .to_string()
-                .parse::<DateTime<Utc>>()
-                .unwrap(),
+            date: Utc.ymd(2020, 12, 31).and_hms(0, 0, 0),
             duration: Duration::zero(),
-        };
-        let event_b = CmpEvent::from_event(event_b);
+        });
 
         assert_eq!(event_a.cmp(&event_b), Ordering::Less)
     }
@@ -126,49 +128,29 @@ mod tests {
     #[test]
     fn test_overlap() {
         let event_a = Event {
-            organizer: "test".to_string(),
-            description: "test".to_string(),
-            date: "2019-01-01T00:00:00Z"
-                .to_string()
-                .parse::<DateTime<Utc>>()
-                .unwrap(),
+            date: Utc.ymd(2019, 1, 1).and_hms(0, 0, 0),
             duration: Duration::hours(2),
+            ..Default::default()
         };
         let event_b = Event {
-            organizer: "test".to_string(),
-            description: "test".to_string(),
-            date: "2019-01-01T01:00:00Z"
-                .to_string()
-                .parse::<DateTime<Utc>>()
-                .unwrap(),
+            date: Utc.ymd(2019, 1, 1).and_hms(1, 0, 0),
             duration: Duration::hours(1),
+            ..Default::default()
         };
         let event_c = Event {
-            organizer: "test".to_string(),
-            description: "test".to_string(),
-            date: "2020-12-31T00:00:00Z"
-                .to_string()
-                .parse::<DateTime<Utc>>()
-                .unwrap(),
+            date: Utc.ymd(2020, 12, 31).and_hms(0, 0, 0),
             duration: Duration::hours(1),
+            ..Default::default()
         };
         let event_d = Event {
-            organizer: "test".to_string(),
-            description: "test".to_string(),
-            date: "2019-01-01T00:30:00Z"
-                .to_string()
-                .parse::<DateTime<Utc>>()
-                .unwrap(),
+            date: Utc.ymd(2019, 1, 1).and_hms(0, 30, 0),
             duration: Duration::hours(1),
+            ..Default::default()
         };
         let event_e = Event {
-            organizer: "test".to_string(),
-            description: "test".to_string(),
-            date: "2019-01-01T00:00:00Z"
-                .to_string()
-                .parse::<DateTime<Utc>>()
-                .unwrap(),
+            date: Utc.ymd(2019, 1, 1).and_hms(0, 0, 0),
             duration: Duration::hours(2),
+            ..Default::default()
         };
         assert!(event_a.overlap(&event_b));
         assert!(!event_a.overlap(&event_c));
@@ -178,20 +160,14 @@ mod tests {
 
     #[test]
     fn test_event_in() {
-        let date = "2019-01-01T12:00:00Z"
-            .to_string()
-            .parse::<DateTime<Utc>>()
-            .unwrap();
         let event = Event {
-            organizer: "test".to_string(),
-            description: "test".to_string(),
-            date: date,
-            duration: Duration::zero(),
+            date: Utc.ymd(2019, 1, 1).and_hms(12, 0, 0),
+            ..Default::default()
         };
 
         let mut cal = Cal::new();
         cal.add_event(event.clone());
-        let events = cal.events_in(date - Duration::days(1)..date + Duration::days(1));
+        let events = cal.events_in(event.date - Duration::days(1)..event.date + Duration::days(1));
 
         for e in events {
             assert_eq!(CmpEvent::from_event(e), CmpEvent::from_event(event.clone()));
