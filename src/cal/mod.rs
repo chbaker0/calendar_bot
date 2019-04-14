@@ -19,12 +19,15 @@ impl Cal {
         }
     }
 
-    pub fn events_in(&self, range: Range<DateTime<Utc>>) -> impl Iterator<Item = Event> + '_ {
+    pub fn events_in<'a>(
+        &'a self,
+        range: Range<DateTime<Utc>>,
+    ) -> impl Iterator<Item = &Event> + 'a {
         let event_range = Range {
             start: CmpEvent::from_date(range.start),
             end: CmpEvent::from_date(range.end),
         };
-        self.events.range(event_range).map(|x| x.event.clone())
+        self.events.range(event_range).map(|x| &x.event)
     }
 
     pub fn add_event(&mut self, event: Event) -> bool {
@@ -40,24 +43,23 @@ pub struct Event {
     pub duration: Duration,
 }
 
-impl Default for Event {
-    fn default() -> Event {
+#[allow(dead_code)]
+impl Event {
+    pub fn overlap(&self, other: &Event) -> bool {
+        match self.date.cmp(&other.date) {
+            Ordering::Less => self.date + self.duration > other.date,
+            Ordering::Greater => other.date + other.duration > self.date,
+            Ordering::Equal => true,
+        }
+    }
+
+    /// There is really no event default, this is a convieneince method, hence why its private
+    fn event_default() -> Event {
         Event {
             organizer: "".to_string(),
             description: "".to_string(),
             date: chrono::Utc::now(),
             duration: Duration::zero(),
-        }
-    }
-}
-
-#[allow(dead_code)]
-impl Event {
-    pub fn overlap(&self, other: &Event) -> bool {
-        match self.date.cmp(&other.date) {
-            Ordering::Less => self.date + self.duration >= other.date,
-            Ordering::Greater => other.date + other.duration >= self.date,
-            Ordering::Equal => true,
         }
     }
 }
@@ -71,7 +73,7 @@ impl CmpEvent {
     fn from_date(date: DateTime<Utc>) -> CmpEvent {
         let event = Event {
             date: date,
-            ..Default::default()
+            ..Event::event_default()
         };
 
         CmpEvent { event: event }
@@ -130,27 +132,27 @@ mod tests {
         let event_a = Event {
             date: Utc.ymd(2019, 1, 1).and_hms(0, 0, 0),
             duration: Duration::hours(2),
-            ..Default::default()
+            ..Event::event_default()
         };
         let event_b = Event {
             date: Utc.ymd(2019, 1, 1).and_hms(1, 0, 0),
             duration: Duration::hours(1),
-            ..Default::default()
+            ..Event::event_default()
         };
         let event_c = Event {
             date: Utc.ymd(2020, 12, 31).and_hms(0, 0, 0),
             duration: Duration::hours(1),
-            ..Default::default()
+            ..Event::event_default()
         };
         let event_d = Event {
             date: Utc.ymd(2019, 1, 1).and_hms(0, 30, 0),
             duration: Duration::hours(1),
-            ..Default::default()
+            ..Event::event_default()
         };
         let event_e = Event {
             date: Utc.ymd(2019, 1, 1).and_hms(0, 0, 0),
             duration: Duration::hours(2),
-            ..Default::default()
+            ..Event::event_default()
         };
         assert!(event_a.overlap(&event_b));
         assert!(!event_a.overlap(&event_c));
@@ -162,7 +164,7 @@ mod tests {
     fn test_event_in() {
         let event = Event {
             date: Utc.ymd(2019, 1, 1).and_hms(12, 0, 0),
-            ..Default::default()
+            ..Event::event_default()
         };
 
         let mut cal = Cal::new();
@@ -170,7 +172,10 @@ mod tests {
         let events = cal.events_in(event.date - Duration::days(1)..event.date + Duration::days(1));
 
         for e in events {
-            assert_eq!(CmpEvent::from_event(e), CmpEvent::from_event(event.clone()));
+            assert_eq!(
+                CmpEvent::from_event(e.clone()),
+                CmpEvent::from_event(event.clone())
+            );
         }
     }
 }
