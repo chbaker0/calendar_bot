@@ -35,7 +35,7 @@ impl Cal {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug)]
 pub struct Event {
     pub organizer: String,
     pub description: String,
@@ -169,13 +169,11 @@ mod tests {
 
         let mut cal = Cal::new();
         cal.add_event(event.clone());
-        let events = cal.events_in(event.date - Duration::days(1)..event.date + Duration::days(1));
+        let e = cal
+            .events_in(event.date - Duration::days(1)..event.date + Duration::days(1))
+            .next()
+            .unwrap();
 
-        for e in events {
-            assert_eq!(
-                CmpEvent::from_event(e.clone()),
-                CmpEvent::from_event(event.clone())
-            );
-        }
+        assert_eq!(*e, event);
     }
 }
