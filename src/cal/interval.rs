@@ -5,12 +5,16 @@ use std::cmp::max;
 use std::cmp::min;
 use std::cmp::Ordering;
 
-#[derive(Clone, Copy, Debug)]
+use serde::Deserialize;
+use serde::Serialize;
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct Interval<T> {
-    start: T,
-    end: T,
+    pub start: T,
+    pub end: T,
 }
 
+#[allow(dead_code)]
 impl<T> Interval<T>
 where
     T: Eq,
