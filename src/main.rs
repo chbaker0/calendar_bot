@@ -21,20 +21,26 @@ fn main() {
     println!("{:?}", me);
 
     tg::update_stream(&tg_client, 10)
-        .wait()
-        .map(Result::unwrap)
         .filter_map(|update| update.message)
         .for_each(|recv_msg| {
             let (command, body) =
                 parse_command(recv_msg.text.as_ref().map(String::as_str).unwrap_or(""));
+
             if command == "echo" && !body.is_empty() {
                 let send_msg = tg::SendMessage {
                     chat_id: recv_msg.chat.id,
                     text: String::from(body),
                 };
-                tg_client.send_message(send_msg).wait().unwrap().unwrap();
+                future::Either::A(tg_client.send_message(send_msg).map(|r| {
+                    r.unwrap();
+                    ()
+                }))
+            } else {
+                future::Either::B(future::ok(()))
             }
-        });
+        })
+        .wait()
+        .unwrap();
 }
 
 /// Given the body of a message, parse out the command from the rest
