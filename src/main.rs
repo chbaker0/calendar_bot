@@ -26,7 +26,7 @@ fn main() {
     let me = tg_client.get_me().wait().unwrap().unwrap();
     println!("{:?}", me);
 
-    let mut cal = cal::Cal::new();
+    let mut cal = load_cal();
 
     tg::update_stream(&tg_client, 10)
         .filter_map(|update| update.message)
@@ -49,6 +49,7 @@ fn main() {
                 let response = match parse_event(body) {
                     Ok(event) => {
                         cal.add_event(event);
+                        save_cal(&cal);
                         String::from("Added event successfully")
                     }
                     Err(err) => String::from(err),
@@ -186,6 +187,23 @@ fn synchronous_send(
     }
     future::result::<String, reqwest::Error>(req.send().and_then(|mut resp| resp.text()))
 }
+
+fn load_cal() -> cal::Cal {
+    match std::fs::File::open(CAL_FILE) {
+        Ok(file) => {
+            let reader = std::io::BufReader::new(file);
+            serde_json::de::from_reader(reader).unwrap()
+        }
+        Err(_) => cal::Cal::new(),
+    }
+}
+
+fn save_cal(cal: &cal::Cal) {
+    let writer = std::io::BufWriter::new(std::fs::File::create(CAL_FILE).unwrap());
+    serde_json::ser::to_writer(writer, cal).unwrap();
+}
+
+const CAL_FILE: &'static str = "cal";
 
 const TOKEN_ENV_VAR: &'static str = "TG_BOT_TOKEN";
 
