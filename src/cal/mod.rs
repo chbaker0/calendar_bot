@@ -1,3 +1,5 @@
+pub mod interval;
+
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::ops::Range;
