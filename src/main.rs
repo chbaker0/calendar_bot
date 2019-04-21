@@ -1,5 +1,7 @@
 extern crate chrono;
 extern crate futures;
+extern crate itertools;
+extern crate lazy_static;
 extern crate reqwest;
 extern crate serde;
 extern crate serde_json;
@@ -8,11 +10,14 @@ mod cal;
 mod tg;
 
 use std::mem::drop;
+use std::ops::Range;
 use std::string::String;
 
+use chrono::prelude::*;
 use futures::future;
 use futures::Future;
 use futures::Stream;
+use lazy_static::lazy_static;
 
 fn main() {
     let token = std::env::var(TOKEN_ENV_VAR).expect("Missing TG_BOT_TOKEN env var");
@@ -20,6 +25,8 @@ fn main() {
     let tg_client = tg::Client::new(token, |url, body| synchronous_send(&http_client, url, body));
     let me = tg_client.get_me().wait().unwrap().unwrap();
     println!("{:?}", me);
+
+    let mut cal = load_cal();
 
     tg::update_stream(&tg_client, 10)
         .filter_map(|update| update.message)
@@ -40,9 +47,35 @@ fn main() {
                 )
             } else if command == "add_event" {
                 let response = match parse_event(body) {
-                    Ok(event) => format!("{:?}", event),
+                    Ok(event) => {
+                        cal.add_event(event);
+                        save_cal(&cal);
+                        String::from("Added event successfully")
+                    }
                     Err(err) => String::from(err),
                 };
+
+                let send_msg = tg::SendMessage {
+                    chat_id: recv_msg.chat.id,
+                    text: response,
+                };
+                Some(
+                    tg_client
+                        .send_message(send_msg)
+                        .map(Result::unwrap)
+                        .map(drop),
+                )
+            } else if command == "today" {
+                let today_local = Utc::now().with_timezone(&*TIMEZONE).date();
+                let range = Range {
+                    start: today_local.and_hms(0, 0, 0).with_timezone(&Utc),
+                    end: today_local.and_hms(23, 59, 59).with_timezone(&Utc),
+                };
+                let mut response =
+                    itertools::join(cal.events_in(range).map(pretty_print_event), "\n\n");
+                if response == "" {
+                    response = String::from("No events today");
+                }
 
                 let send_msg = tg::SendMessage {
                     chat_id: recv_msg.chat.id,
@@ -100,7 +133,6 @@ fn parse_command(text: &str) -> (&str, &str) {
 /// Parses out a date, time, duration, and event description from the
 /// message body.
 fn parse_event(text: &str) -> Result<cal::Event, &'static str> {
-    use chrono::prelude::*;
     use chrono::Duration;
 
     const ERROR_MESSAGE: &'static str = "wrong";
@@ -112,7 +144,7 @@ fn parse_event(text: &str) -> Result<cal::Event, &'static str> {
     let date = NaiveDate::parse_from_str(date_text, "%m/%d/%Y").map_err(|_| ERROR_MESSAGE)?;
     let time = NaiveTime::parse_from_str(time_text, "%H:%M:%S").map_err(|_| ERROR_MESSAGE)?;
 
-    let tz_datetime = FixedOffset::west(7)
+    let tz_datetime = TIMEZONE
         .from_local_datetime(&NaiveDateTime::new(date, time))
         .earliest()
         .ok_or(ERROR_MESSAGE)?;
@@ -124,6 +156,21 @@ fn parse_event(text: &str) -> Result<cal::Event, &'static str> {
         date: utc_datetime,
         duration: Duration::hours(1),
     })
+}
+
+fn pretty_print_event(event: &cal::Event) -> String {
+    let mut result = String::new();
+    result.push_str("On ");
+    result.push_str(
+        &event
+            .date
+            .with_timezone(&*TIMEZONE)
+            .format("%-m/%-d/%Y at %H:%M:%S")
+            .to_string(),
+    );
+    result.push_str(":\n");
+    result.push_str(&event.description);
+    result
 }
 
 /// Adapter for using reqwest with futures.
@@ -141,7 +188,28 @@ fn synchronous_send(
     future::result::<String, reqwest::Error>(req.send().and_then(|mut resp| resp.text()))
 }
 
+fn load_cal() -> cal::Cal {
+    match std::fs::File::open(CAL_FILE) {
+        Ok(file) => {
+            let reader = std::io::BufReader::new(file);
+            serde_json::de::from_reader(reader).unwrap()
+        }
+        Err(_) => cal::Cal::new(),
+    }
+}
+
+fn save_cal(cal: &cal::Cal) {
+    let writer = std::io::BufWriter::new(std::fs::File::create(CAL_FILE).unwrap());
+    serde_json::ser::to_writer(writer, cal).unwrap();
+}
+
+const CAL_FILE: &'static str = "cal";
+
 const TOKEN_ENV_VAR: &'static str = "TG_BOT_TOKEN";
+
+lazy_static! {
+    static ref TIMEZONE: chrono::offset::FixedOffset = chrono::offset::FixedOffset::west(7 * 3600);
+}
 
 #[cfg(test)]
 mod tests {
@@ -164,14 +232,9 @@ mod tests {
 
     #[test]
     fn parse_event_correct_datetime() {
-        use chrono::prelude::*;
-
         let body = "1/15/2024 7:53:29 hello world";
         let event = parse_event(body).unwrap();
-        assert_eq!(
-            event.date,
-            FixedOffset::west(7).ymd(2024, 1, 15).and_hms(7, 53, 29)
-        );
+        assert_eq!(event.date, TIMEZONE.ymd(2024, 1, 15).and_hms(7, 53, 29));
     }
 
     #[test]
@@ -194,5 +257,22 @@ mod tests {
         assert!(parse_event("1/1/1 1:67:1").is_err());
         assert!(parse_event("1/1/11:1:1").is_err());
         assert!(parse_event("1/1/1 i forgot the time").is_err());
+    }
+
+    #[test]
+    fn pretty_print_event_test() {
+        let event = cal::Event {
+            organizer: String::from(""),
+            description: String::from("test description"),
+            date: TIMEZONE
+                .ymd(2000, 1, 15)
+                .and_hms(13, 1, 2)
+                .with_timezone(&Utc),
+            duration: chrono::Duration::hours(1),
+        };
+        assert_eq!(
+            pretty_print_event(&event),
+            String::from("On 1/15/2000 at 13:01:02:\ntest description")
+        );
     }
 }

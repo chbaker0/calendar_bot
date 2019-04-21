@@ -1,12 +1,14 @@
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::ops::Range;
 
 use chrono::DateTime;
 use chrono::Duration;
 use chrono::Utc;
+use serde::Deserialize;
+use serde::Serialize;
 
-use std::cmp::Ordering;
-
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Cal {
     events: BTreeSet<CmpEvent>,
 }
@@ -35,12 +37,76 @@ impl Cal {
     }
 }
 
-#[derive(Eq, PartialEq, Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Event {
     pub organizer: String,
     pub description: String,
     pub date: DateTime<Utc>,
+    #[serde(with = "duration_serde")]
     pub duration: Duration,
+}
+
+mod duration_serde {
+    use chrono::Duration;
+    use serde::de::Deserializer;
+    use serde::de::Error;
+    use serde::de::MapAccess;
+    use serde::de::SeqAccess;
+    use serde::de::Visitor;
+    use serde::ser::SerializeStruct;
+    use serde::ser::Serializer;
+
+    const STRUCT_NAME: &'static str = "Duration";
+    const FIELD_NAME: &'static str = "_";
+
+    pub fn serialize<S>(dur: &Duration, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut ss = s.serialize_struct(STRUCT_NAME, 1)?;
+        ss.serialize_field(FIELD_NAME, &dur.to_std().unwrap())?;
+        ss.end()
+    }
+
+    pub fn deserialize<'de, D>(d: D) -> Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct DurationVisitor;
+
+        impl<'de> Visitor<'de> for DurationVisitor {
+            type Value = Duration;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str(STRUCT_NAME)
+            }
+
+            fn visit_seq<V>(self, mut seq: V) -> Result<Duration, V::Error>
+            where
+                V: SeqAccess<'de>,
+            {
+                match seq.next_element()? {
+                    Some(dur) => Ok(Duration::from_std(dur).unwrap()),
+                    None => Err(V::Error::missing_field(FIELD_NAME)),
+                }
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<Duration, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                while let Some((k, v)) = map.next_entry::<String, _>()? {
+                    if k == FIELD_NAME {
+                        return Ok(Duration::from_std(v).unwrap());
+                    }
+                }
+
+                Err(V::Error::missing_field(FIELD_NAME))
+            }
+        }
+
+        d.deserialize_struct(STRUCT_NAME, &[FIELD_NAME], DurationVisitor)
+    }
 }
 
 #[allow(dead_code)]
@@ -64,7 +130,7 @@ impl Event {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct CmpEvent {
     event: Event,
 }
