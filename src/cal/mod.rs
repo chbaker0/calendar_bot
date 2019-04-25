@@ -89,7 +89,6 @@ impl Cal {
             },
             busy_times: self.events_in(range).map(|x| x.interval),
         }
-        .into_iter()
     }
 
     pub fn add_event(&mut self, event: Event) -> bool {
@@ -98,7 +97,7 @@ impl Cal {
 
     pub fn find_time<T>(
         &self,
-        proposed_times: &mut T,
+        mut proposed_times: T,
         range: Range<DateTime<Utc>>,
         duration: Duration,
     ) -> Option<Interval<DateTime<Utc>>>
@@ -110,22 +109,15 @@ impl Cal {
         let mut free_time = free_times.next()?;
 
         loop {
-            match proposed_time.intersection(&free_time) {
-                Some(x) => {
-                    if x.end.signed_duration_since(x.start) >= duration {
-                        return Some(x);
-                    } else {
-                        match proposed_time.cmp(&free_time) {
-                            Ordering::Less => proposed_time = proposed_times.next()?,
-                            Ordering::Greater => free_time = free_times.next()?,
-                            Ordering::Equal => {
-                                free_time = free_times.next()?;
-                                proposed_time = proposed_times.next()?;
-                            }
-                        }
-                    }
+            if let Some(x) = proposed_time.intersection(&free_time) {
+                if x.end.signed_duration_since(x.start) >= duration {
+                    return Some(x);
                 }
-                None => {
+            }
+            match proposed_time.cmp(&free_time) {
+                Ordering::Less => proposed_time = proposed_times.next()?,
+                Ordering::Greater => free_time = free_times.next()?,
+                Ordering::Equal => {
                     free_time = free_times.next()?;
                     proposed_time = proposed_times.next()?;
                 }
@@ -147,25 +139,25 @@ impl Event {
         self.interval.intersection(&other.interval)
     }
 
-    fn from_datetime_duration(start: DateTime<Utc>, hours: i64) -> Event {
+    fn from_datetime_duration(start: DateTime<Utc>, duration: Duration) -> Event {
         Event {
             organizer: "".to_string(),
             description: "".to_string(),
             interval: Interval {
                 start: start,
-                end: start + Duration::hours(hours),
+                end: start + duration,
             },
         }
     }
 
     fn from_date(start: DateTime<Utc>) -> Event {
-        Event::from_datetime_duration(start, 0)
+        Event::from_datetime_duration(start, Duration::hours(0))
     }
 
     /// There is really no event default, this is a convieneince method, hence why its private
     fn event_default() -> Event {
         use chrono::TimeZone;
-        Event::from_datetime_duration(Utc.ymd(2019, 1, 1).and_hms(0, 0, 0), 1)
+        Event::from_datetime_duration(Utc.ymd(2019, 1, 1).and_hms(0, 0, 0), Duration::hours(1))
     }
 }
 
@@ -226,8 +218,15 @@ mod tests {
 
     #[test]
     fn test_find_intervals() {
-        let event_a = Event::from_datetime_duration(Utc.ymd(2019, 1, 1).and_hms(12, 0, 0), 1);
-        let event_b = Event::from_datetime_duration(Utc.ymd(2019, 2, 1).and_hms(12, 0, 0), 1);
+        let event_a = Event::from_datetime_duration(
+            Utc.ymd(2019, 1, 1).and_hms(12, 0, 0),
+            Duration::hours(1),
+        );
+        let event_b = Event::from_datetime_duration(
+            Utc.ymd(2019, 2, 1).and_hms(12, 0, 0),
+            Duration::hours(1),
+        );
+
         let mut free_times = Vec::new();
         free_times.push(Interval {
             start: Utc.ymd(2019, 1, 1).and_hms(12, 0, 0),
@@ -248,6 +247,39 @@ mod tests {
         };
         assert_eq!(
             free_times[1].clone(),
+            cal.find_time(free_times.into_iter().by_ref(), range, Duration::hours(1))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    /// This is to test when the first free time and the first proposed time don't overlap
+    fn find_times_no_overlap() {
+        let event_a = Event::from_datetime_duration(
+            Utc.ymd(2019, 1, 1).and_hms(10, 0, 0),
+            Duration::hours(1),
+        );
+        let event_b = Event::from_datetime_duration(
+            Utc.ymd(2019, 2, 1).and_hms(11, 0, 0),
+            Duration::hours(1),
+        );
+
+        let mut free_times = Vec::new();
+        free_times.push(Interval {
+            start: Utc.ymd(2019, 1, 1).and_hms(12, 0, 0),
+            end: Utc.ymd(2019, 1, 1).and_hms(13, 0, 0),
+        });
+
+        let mut cal = Cal::new();
+        cal.add_event(event_a.clone());
+        cal.add_event(event_b.clone());
+
+        let range = Range {
+            start: Utc.ymd(2019, 1, 1).and_hms(0, 0, 0),
+            end: Utc.ymd(2019, 1, 2).and_hms(15, 0, 0),
+        };
+        assert_eq!(
+            free_times[0].clone(),
             cal.find_time(free_times.into_iter().by_ref(), range, Duration::hours(1))
                 .unwrap()
         );
@@ -286,11 +318,20 @@ mod tests {
 
     #[test]
     fn test_overlap() {
-        let event_a = Event::from_datetime_duration(Utc.ymd(2019, 1, 1).and_hms(0, 0, 0), 2);
-        let event_b = Event::from_datetime_duration(Utc.ymd(2019, 1, 1).and_hms(1, 0, 0), 1);
-        let event_c = Event::from_datetime_duration(Utc.ymd(2020, 12, 31).and_hms(0, 0, 0), 1);
-        let event_d = Event::from_datetime_duration(Utc.ymd(2019, 1, 1).and_hms(0, 30, 0), 1);
-        let event_e = Event::from_datetime_duration(Utc.ymd(2019, 1, 1).and_hms(0, 0, 0), 2);
+        let event_a =
+            Event::from_datetime_duration(Utc.ymd(2019, 1, 1).and_hms(0, 0, 0), Duration::hours(2));
+        let event_b =
+            Event::from_datetime_duration(Utc.ymd(2019, 1, 1).and_hms(1, 0, 0), Duration::hours(1));
+        let event_c = Event::from_datetime_duration(
+            Utc.ymd(2020, 12, 31).and_hms(0, 0, 0),
+            Duration::hours(1),
+        );
+        let event_d = Event::from_datetime_duration(
+            Utc.ymd(2019, 1, 1).and_hms(0, 30, 0),
+            Duration::hours(1),
+        );
+        let event_e =
+            Event::from_datetime_duration(Utc.ymd(2019, 1, 1).and_hms(0, 0, 0), Duration::hours(2));
         assert!(event_a.overlap(&event_b).is_some());
         assert!(event_a.overlap(&event_c).is_none());
         assert!(event_a.overlap(&event_d).is_some());

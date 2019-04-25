@@ -91,7 +91,6 @@ where
             interval: (*self).clone(),
             intersection: self.intersection(other),
         }
-        .into_iter()
     }
 }
 
@@ -122,7 +121,7 @@ impl<T> Eq for Interval<T> where T: Eq {}
 
 impl<T> PartialEq for Interval<T>
 where
-    T: Eq,
+    T: PartialEq,
 {
     fn eq(&self, other: &Interval<T>) -> bool {
         self.start == other.start && self.end == other.end
