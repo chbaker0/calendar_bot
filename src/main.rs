@@ -19,6 +19,8 @@ use futures::Future;
 use futures::Stream;
 use lazy_static::lazy_static;
 
+use crate::cal::interval::Interval;
+
 fn main() {
     let token = std::env::var(TOKEN_ENV_VAR).expect("Missing TG_BOT_TOKEN env var");
     let http_client = reqwest::Client::new();
@@ -153,8 +155,10 @@ fn parse_event(text: &str) -> Result<cal::Event, &'static str> {
     Ok(cal::Event {
         organizer: String::new(),
         description: String::from(description),
-        date: utc_datetime,
-        duration: Duration::hours(1),
+        interval: Interval {
+            start: utc_datetime,
+            end: utc_datetime + Duration::hours(1),
+        },
     })
 }
 
@@ -163,7 +167,8 @@ fn pretty_print_event(event: &cal::Event) -> String {
     result.push_str("On ");
     result.push_str(
         &event
-            .date
+            .interval
+            .start
             .with_timezone(&*TIMEZONE)
             .format("%-m/%-d/%Y at %H:%M:%S")
             .to_string(),
@@ -234,7 +239,10 @@ mod tests {
     fn parse_event_correct_datetime() {
         let body = "1/15/2024 7:53:29 hello world";
         let event = parse_event(body).unwrap();
-        assert_eq!(event.date, TIMEZONE.ymd(2024, 1, 15).and_hms(7, 53, 29));
+        assert_eq!(
+            event.interval.start,
+            TIMEZONE.ymd(2024, 1, 15).and_hms(7, 53, 29)
+        );
     }
 
     #[test]
@@ -264,11 +272,16 @@ mod tests {
         let event = cal::Event {
             organizer: String::from(""),
             description: String::from("test description"),
-            date: TIMEZONE
-                .ymd(2000, 1, 15)
-                .and_hms(13, 1, 2)
-                .with_timezone(&Utc),
-            duration: chrono::Duration::hours(1),
+            interval: Interval {
+                start: TIMEZONE
+                    .ymd(2000, 1, 15)
+                    .and_hms(13, 1, 2)
+                    .with_timezone(&Utc),
+                end: TIMEZONE
+                    .ymd(2000, 1, 15)
+                    .and_hms(13, 1, 2)
+                    .with_timezone(&Utc),
+            },
         };
         assert_eq!(
             pretty_print_event(&event),
