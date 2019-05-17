@@ -4,9 +4,12 @@ use crate::cal::interval::Interval;
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
-use std::ops::Range;
-
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::io;
 use std::iter::Iterator;
+use std::ops::Range;
+use std::path::Path;
 
 use chrono::DateTime;
 use chrono::Duration;
@@ -14,7 +17,7 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Cal {
     events: BTreeSet<CmpEvent>,
 }
@@ -126,6 +129,69 @@ impl Cal {
     }
 }
 
+#[derive(Debug)]
+pub struct PersistentCal {
+    cal: Cal,
+    store: File,
+}
+
+impl PersistentCal {
+    pub fn create<P: AsRef<Path>>(store_path: P) -> io::Result<PersistentCal> {
+        Ok(PersistentCal {
+            cal: Cal::new(),
+            store: File::create(store_path.as_ref())?,
+        })
+    }
+
+    pub fn open<P: AsRef<Path>>(store_path: P) -> io::Result<PersistentCal> {
+        let mut cal = Cal::new();
+        {
+            let mut file = File::open(store_path.as_ref())?;
+            while let Ok(event) = bincode::deserialize_from(&mut file) {
+                cal.add_event(event);
+            }
+        }
+
+        Ok(PersistentCal {
+            cal: cal,
+            store: OpenOptions::new().append(true).open(store_path.as_ref())?,
+        })
+    }
+
+    pub fn open_or_create<P: AsRef<Path>>(store_path: P) -> io::Result<PersistentCal> {
+        let err = match Self::open(store_path.as_ref()) {
+            Ok(cal) => return Ok(cal),
+            Err(err) => err,
+        };
+
+        if err.kind() != io::ErrorKind::NotFound {
+            return Err(err);
+        }
+
+        Self::create(store_path.as_ref())
+    }
+
+    pub fn get_cal(&self) -> &Cal {
+        &self.cal
+    }
+
+    pub fn add_event(&mut self, event: Event) -> io::Result<()> {
+        match bincode::serialize_into(&self.store, &event) {
+            Ok(()) => {
+                assert!(
+                    self.cal.add_event(event),
+                    "Need to handle Cal::add_event() failing"
+                );
+                Ok(())
+            }
+            Err(err) => match *err {
+                bincode::ErrorKind::Io(io_err) => Err(io_err),
+                _ => panic!("Unexpected error from bincode::serialize_into()"),
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Event {
     pub organizer: String,
@@ -155,7 +221,7 @@ impl Event {
     }
 
     /// There is really no event default, this is a convieneince method, hence why its private
-    fn event_default() -> Event {
+    fn dummy() -> Event {
         use chrono::TimeZone;
         Event::from_datetime_duration(Utc.ymd(2019, 1, 1).and_hms(0, 0, 0), Duration::hours(1))
     }
@@ -179,7 +245,7 @@ impl CmpEvent {
     fn from_interval(interval: Interval<DateTime<Utc>>) -> CmpEvent {
         let event = Event {
             interval: interval,
-            ..Event::event_default()
+            ..Event::dummy()
         };
 
         CmpEvent { event: event }
@@ -368,5 +434,56 @@ mod tests {
 
         let free_times = cal.free_time_in(event.interval.start..event.interval.end);
         assert_eq!(free_times.count(), 0);
+    }
+
+    extern crate tempfile;
+
+    #[test]
+    fn persistent_cal_writes_to_file() {
+        use std::fs::metadata;
+
+        let store_path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        assert!(metadata(&store_path).unwrap().len() == 0);
+
+        {
+            let mut cal = PersistentCal::create(&store_path).unwrap();
+            cal.add_event(Event::dummy()).unwrap();
+        }
+
+        assert!(metadata(&store_path).unwrap().len() > 0);
+    }
+
+    #[test]
+    fn persistent_cal_forwards_to_cal() {
+        let store_path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        let mut persistent_cal = PersistentCal::create(&store_path).unwrap();
+        let mut cal = Cal::new();
+
+        let event1 = Event::from_date(Utc.ymd(2019, 1, 1).and_hms(0, 0, 0));
+        let event2 = Event::from_date(Utc.ymd(2019, 1, 2).and_hms(0, 0, 0));
+
+        persistent_cal.add_event(event1.clone()).unwrap();
+        cal.add_event(event1);
+
+        persistent_cal.add_event(event2.clone()).unwrap();
+        cal.add_event(event2);
+
+        assert_eq!(persistent_cal.get_cal(), &cal);
+    }
+
+    #[test]
+    fn persistent_cal_reads_back_correctly() {
+        let store_path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+
+        let true_cal = {
+            let mut cal = PersistentCal::create(&store_path).unwrap();
+            cal.add_event(Event::dummy()).unwrap();
+            cal.get_cal().clone()
+        };
+
+        assert_eq!(
+            PersistentCal::open(&store_path).unwrap().get_cal(),
+            &true_cal
+        );
     }
 }

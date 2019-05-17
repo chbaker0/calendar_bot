@@ -1,3 +1,4 @@
+extern crate bincode;
 extern crate chrono;
 extern crate futures;
 extern crate itertools;
@@ -28,7 +29,8 @@ fn main() {
     let me = tg_client.get_me().wait().unwrap().unwrap();
     println!("{:?}", me);
 
-    let mut cal = load_cal();
+    let mut cal =
+        cal::PersistentCal::open_or_create(CAL_FILE).expect("Couldn't open calendar file");
 
     tg::update_stream(&tg_client, 10)
         .filter_map(|update| update.message)
@@ -50,8 +52,7 @@ fn main() {
             } else if command == "add_event" {
                 let response = match parse_event(body) {
                     Ok(event) => {
-                        cal.add_event(event);
-                        save_cal(&cal);
+                        cal.add_event(event).unwrap();
                         String::from("Added event successfully")
                     }
                     Err(err) => String::from(err),
@@ -73,8 +74,10 @@ fn main() {
                     start: today_local.and_hms(0, 0, 0).with_timezone(&Utc),
                     end: today_local.and_hms(23, 59, 59).with_timezone(&Utc),
                 };
-                let mut response =
-                    itertools::join(cal.events_in(range).map(pretty_print_event), "\n\n");
+                let mut response = itertools::join(
+                    cal.get_cal().events_in(range).map(pretty_print_event),
+                    "\n\n",
+                );
                 if response == "" {
                     response = String::from("No events today");
                 }
@@ -191,21 +194,6 @@ fn synchronous_send(
             .header(reqwest::header::CONTENT_TYPE, "application/json");
     }
     future::result::<String, reqwest::Error>(req.send().and_then(|mut resp| resp.text()))
-}
-
-fn load_cal() -> cal::Cal {
-    match std::fs::File::open(CAL_FILE) {
-        Ok(file) => {
-            let reader = std::io::BufReader::new(file);
-            serde_json::de::from_reader(reader).unwrap()
-        }
-        Err(_) => cal::Cal::new(),
-    }
-}
-
-fn save_cal(cal: &cal::Cal) {
-    let writer = std::io::BufWriter::new(std::fs::File::create(CAL_FILE).unwrap());
-    serde_json::ser::to_writer(writer, cal).unwrap();
 }
 
 const CAL_FILE: &'static str = "cal";
