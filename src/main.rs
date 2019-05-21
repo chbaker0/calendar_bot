@@ -32,69 +32,58 @@ fn main() {
     let mut cal =
         cal::PersistentCal::open_or_create(CAL_FILE).expect("Couldn't open calendar file");
 
+    let send_response = |chat_id, text| {
+        let msg = tg::SendMessage {
+            chat_id: chat_id,
+            text: text,
+        };
+
+        tg_client.send_message(msg).map(Result::unwrap).map(drop)
+    };
+
     tg::update_stream(&tg_client, 10)
         .filter_map(|update| update.message)
         .filter_map(|recv_msg| {
-            let (command, body) =
-                parse_command(recv_msg.text.as_ref().map(String::as_str).unwrap_or(""));
-
-            if command == "echo" && !body.is_empty() {
-                let send_msg = tg::SendMessage {
-                    chat_id: recv_msg.chat.id,
-                    text: String::from(body),
-                };
-                Some(
-                    tg_client
-                        .send_message(send_msg)
-                        .map(Result::unwrap)
-                        .map(drop),
-                )
-            } else if command == "add_event" {
-                let response = match parse_event(body) {
-                    Ok(event) => {
-                        cal.add_event(event).unwrap();
-                        String::from("Added event successfully")
-                    }
-                    Err(err) => String::from(err),
-                };
-
-                let send_msg = tg::SendMessage {
-                    chat_id: recv_msg.chat.id,
-                    text: response,
-                };
-                Some(
-                    tg_client
-                        .send_message(send_msg)
-                        .map(Result::unwrap)
-                        .map(drop),
-                )
-            } else if command == "today" {
-                let today_local = Utc::now().with_timezone(&*TIMEZONE).date();
-                let range = Range {
-                    start: today_local.and_hms(0, 0, 0).with_timezone(&Utc),
-                    end: today_local.and_hms(23, 59, 59).with_timezone(&Utc),
-                };
-                let mut response = itertools::join(
-                    cal.get_cal().events_in(range).map(pretty_print_event),
-                    "\n\n",
-                );
-                if response == "" {
-                    response = String::from("No events today");
-                }
-
-                let send_msg = tg::SendMessage {
-                    chat_id: recv_msg.chat.id,
-                    text: response,
-                };
-                Some(
-                    tg_client
-                        .send_message(send_msg)
-                        .map(Result::unwrap)
-                        .map(drop),
-                )
-            } else {
-                None
+            let command = parse_command(recv_msg.text.as_ref().map(String::as_str).unwrap_or(""));
+            if command.is_err() {
+                return Some(send_response(
+                    recv_msg.chat.id,
+                    command.unwrap_err().to_string(),
+                ));
             }
+
+            let command = command.unwrap();
+            Some(match command {
+                Command::AddEvent(event) => {
+                    // TODO: handle errors here
+                    cal.add_event(event).unwrap();
+                    send_response(recv_msg.chat.id, "Added event successfully".to_string())
+                }
+                Command::GetEvents(date_window) => {
+                    let interval = date_window.resolve(&Utc::now().with_timezone(&*TIMEZONE));
+                    if interval.is_none() {
+                        return Some(send_response(
+                            recv_msg.chat.id,
+                            "Invalid date window specified".to_string(),
+                        ));
+                    }
+
+                    let interval = interval.unwrap();
+                    // TODO: change Cal to take intervals directly
+                    let range = Range {
+                        start: interval.start.with_timezone(&Utc),
+                        end: interval.end.with_timezone(&Utc),
+                    };
+                    let mut response = itertools::join(
+                        cal.get_cal().events_in(range).map(pretty_print_event),
+                        "\n\n",
+                    );
+                    if response == "" {
+                        response = String::from("No events today");
+                    }
+                    send_response(recv_msg.chat.id, response)
+                }
+            })
         })
         .map(Future::into_stream)
         .flatten()
@@ -103,9 +92,48 @@ fn main() {
         .for_each(|_| ());
 }
 
-/// Given the body of a message, parse out the command from the rest
+/// A user command sent to this bot.
+#[derive(Eq, Debug, PartialEq)]
+enum Command {
+    /// Add the contained event to the calendar.
+    AddEvent(cal::Event),
+    /// Get events in some window described by the `DateWindow`.
+    GetEvents(DateWindow),
+}
+
+/// Describes which dates and times the caller is interested for
+/// queries.
+#[derive(Eq, Debug, PartialEq)]
+enum DateWindow {
+    /// Events happening today.
+    Today,
+}
+
+impl DateWindow {
+    fn resolve<Tz: TimeZone>(&self, now: &DateTime<Tz>) -> Option<Interval<DateTime<Tz>>> {
+        match self {
+            DateWindow::Today => Some(Interval {
+                start: now.date().and_hms(0, 0, 0),
+                end: now.date().succ_opt()?.and_hms(0, 0, 0),
+            }),
+        }
+    }
+}
+
+fn parse_command(text: &str) -> Result<Command, &'static str> {
+    let (cmd_name, body) = split_command(text);
+    if cmd_name == "add_event" {
+        Ok(Command::AddEvent(parse_event(body)?))
+    } else if cmd_name == "today" {
+        Ok(Command::GetEvents(DateWindow::Today))
+    } else {
+        Err("Unsupported command")
+    }
+}
+
+/// Given the body of a message, split out the command from the rest
 /// of the message.
-fn parse_command(text: &str) -> (&str, &str) {
+fn split_command(text: &str) -> (&str, &str) {
     let mut chars = text.chars();
     if let Some(_) = chars.find(|c| c == &'/') {
         let chars_after_slash = chars.clone();
@@ -209,18 +237,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_command_tests() {
-        assert_eq!(parse_command("/foo"), ("foo", ""));
-        assert_eq!(parse_command("/foo body test"), ("foo", "body test"));
+    fn date_window_resolve_today() {
+        let now = TIMEZONE.ymd(2019, 1, 1).and_hms(13, 10, 30);
+        let expected = Interval {
+            start: TIMEZONE.ymd(2019, 1, 1).and_hms(0, 0, 0),
+            end: TIMEZONE.ymd(2019, 1, 2).and_hms(0, 0, 0),
+        };
+        assert_eq!(DateWindow::Today.resolve(&now).unwrap(), expected);
+    }
+
+    #[test]
+    fn parse_command_add_event() {
+        assert!(parse_command("/add_event@bot").is_err());
+        let parsed = parse_command("/add_event@bot 01/01/2019 1:00:00 test description").unwrap();
+        if let Command::AddEvent(event) = parsed {
+            assert_eq!(event.description, "test description");
+            assert_eq!(
+                event.interval.start,
+                TIMEZONE
+                    .ymd(2019, 1, 1)
+                    .and_hms(1, 0, 0)
+                    .with_timezone(&Utc)
+            );
+            assert_eq!(
+                event.interval.end,
+                TIMEZONE
+                    .ymd(2019, 1, 1)
+                    .and_hms(2, 0, 0)
+                    .with_timezone(&Utc)
+            )
+        } else {
+            panic!("Returned value is not correct variant: {:?}", parsed);
+        }
+    }
+
+    #[test]
+    fn parse_command_today() {
         assert_eq!(
-            parse_command("/foo@bar_bot body test"),
+            parse_command("/today@bot").unwrap(),
+            Command::GetEvents(DateWindow::Today)
+        );
+    }
+
+    #[test]
+    fn parse_command_invalid() {
+        assert!(parse_command("/trombloni@bot").is_err());
+    }
+
+    #[test]
+    fn split_command_tests() {
+        assert_eq!(split_command("/foo"), ("foo", ""));
+        assert_eq!(split_command("/foo body test"), ("foo", "body test"));
+        assert_eq!(
+            split_command("/foo@bar_bot body test"),
             ("foo", "body test")
         );
-        assert_eq!(parse_command("  /foo"), ("foo", ""));
-        assert_eq!(parse_command("/"), ("", ""));
-        assert_eq!(parse_command("/@"), ("", ""));
-        assert_eq!(parse_command("help me"), ("", "help me"));
-        assert_eq!(parse_command(""), ("", ""));
+        assert_eq!(split_command("  /foo"), ("foo", ""));
+        assert_eq!(split_command("/"), ("", ""));
+        assert_eq!(split_command("/@"), ("", ""));
+        assert_eq!(split_command("help me"), ("", "help me"));
+        assert_eq!(split_command(""), ("", ""));
     }
 
     #[test]
